@@ -4,6 +4,7 @@ import numpy as np
 import base64
 import easyocr
 import datetime
+from rapidfuzz import fuzz
 
 
 from PIL import Image
