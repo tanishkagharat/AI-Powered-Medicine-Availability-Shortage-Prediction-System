@@ -1,44 +1,45 @@
 import streamlit as st
 import pandas as pd
-import base64
-import datetime
-import time
-import easyocr
 import numpy as np
+import base64
+import easyocr
+import datetime
+import pytesseract
+import cv2
+
 from PIL import Image
-from rapidfuzz import fuzz
+from fuzzywuzzy import fuzz
+@st.cache_resource
+def load_reader():
+    return easyocr.Reader(["en"], gpu=False)
 
-# -------------------------
-# CONFIG
-# -------------------------
-st.set_page_config(layout="wide")
 
-# -------------------------
-# BACKGROUND
-# -------------------------
-def get_base64(file):
-    with open(file, "rb") as f:
+# =====================================
+# PAGE CONFIG
+# =====================================
+
+st.set_page_config(
+    page_title="AI-Powered Medicine Availability & Shortage Predictor",
+    page_icon="💊",
+    layout="wide"
+)
+# =====================================
+# LOAD DATASET
+# =====================================
+
+df = pd.read_csv("notebook/medicine dataset.csv")
+
+# =====================================
+# BACKGROUND IMAGE
+# =====================================
+
+def get_base64(file_path):
+    with open(file_path, "rb") as f:
         return base64.b64encode(f.read()).decode()
+
 img = get_base64("notebook/background image.png")
-# -------------------------
-# DATA
-# -------------------------
-@st.cache_data
-def load_data():
-    df = pd.read_csv("notebook/medicine dataset.csv")
-    df.columns = df.columns.str.strip()
-    return df  
+st.title("💊 AI-Powered Medicine Availability & Shortage Predictor")
 
-df = load_data()
-
-# -------------------------
-# TITLE
-# -------------------------
-st.title("AI-Powered Medicine Availability & Shortage Prediction System")
-
-# -------------------------
-# TABS
-# -------------------------
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🔮 Predictor",
     "🚨 Emergency",
@@ -46,10 +47,26 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "⏰ Reminder",
     "🚚 Delivery"
 ])
+st.markdown(f"""
+<style>
 
-# =====================================================
-# 🔮 TAB 1
-# =====================================================
+.stApp {{
+    background: url("data:image/png;base64,{img}") no-repeat center center fixed;
+    background-size: cover;
+}}
+
+.block-container {{
+    background: rgba(0,0,0,0.72);
+    padding: 20px;
+    border-radius: 15px;
+}}
+
+h1,h2,h3,p,label {{
+    color: white;
+}}
+
+</style>
+""", unsafe_allow_html=True)
 with tab1:
 
     st.header("🔮 Medicine Predictor")
@@ -76,11 +93,14 @@ with tab1:
             status = row['Availability']
 
             if status == "Available":
-                color = "#00c9a7"; emoji = "🟢"
+                color = "#00c9a7"
+                emoji = "🟢"
             elif status == "Low Stock":
-                color = "#ffc107"; emoji = "🟡"
+                color = "#ffc107"
+                emoji = "🟡"
             else:
-                color = "#ff4d4d"; emoji = "🔴"
+                color = "#ff4d4d"
+                emoji = "🔴"
 
             st.markdown(f"""
             <div style="background:rgba(0,0,0,0.7);padding:20px;border-radius:15px;border-left:6px solid {color}">
@@ -92,10 +112,6 @@ with tab1:
                 <p>⏱️ {row['Delivery_Time_Minutes']} mins</p>
             </div>
             """, unsafe_allow_html=True)
-
-# =====================================================
-# 🚨 TAB 2
-# =====================================================
 with tab2:
 
     st.header("🚨 Emergency Finder")
@@ -103,10 +119,18 @@ with tab2:
     col1, col2 = st.columns(2)
 
     with col1:
-        med2 = st.selectbox("💊 Medicine", df['Medicine_Name'].unique(), key="em")
+        med2 = st.selectbox(
+            "💊 Medicine",
+            df['Medicine_Name'].unique(),
+            key="em"
+        )
 
     with col2:
-        area2 = st.selectbox("📍 Your Area", df['Area'].unique(), key="em_area")
+        area2 = st.selectbox(
+            "📍 Your Area",
+            df['Area'].unique(),
+            key="em_area"
+        )
 
     if st.button("Find Fastest"):
 
@@ -140,7 +164,6 @@ with tab2:
                     </div>
                 </a>
                 """, unsafe_allow_html=True)
-
 with tab3:
 
     st.header("📸 Upload Prescription")
@@ -155,110 +178,162 @@ with tab3:
         st.image(file, width=300)
         st.success("Uploaded successfully")
 
-        image = Image.open(file)
+        if st.button("🔍 Detect Medicines"):
 
-        reader = easyocr.Reader(["en"])
+            image = Image.open(file).convert("RGB")
+            reader = load_reader()
 
-        with st.spinner("Reading prescription..."):
-            results = reader.readtext(
-                np.array(image),
-                detail=0
-            )
+            with st.spinner("Reading prescription..."):
+                ocr_results = reader.readtext(
+                    np.array(image),
+                    detail=0
+                )
 
-        st.subheader("💊 Medicines Detected")
+            raw_results = [
+                str(text).strip()
+                for text in ocr_results
+                if str(text).strip()
+            ]
 
-        medicine_db = df["Medicine_Name"].dropna().unique()
+            medicine_db = df["Medicine_Name"].dropna().unique()
 
-        detected = []
+            detected = []
+            not_found = []
 
-        for text in results:
-            best_match = None
-            best_score = 0
+            for text in raw_results:
 
-            for med in medicine_db:
-                score = fuzz.ratio(str(med).lower(), text.lower())
+                clean_text = text.replace("|", "")
+                clean_text = clean_text.replace(")", "")
+                clean_text = clean_text.replace("(", "")
+                clean_text = clean_text.replace(":", "")
+                clean_text = clean_text.replace(";", "")
+                clean_text = clean_text.strip()
 
-                if score > best_score:
-                    best_score = score
-                    best_match = med
+                if len(clean_text) < 3:
+                    continue
 
-            if best_score >= 50:
-                detected.append(best_match)
+                best_match = None
+                best_score = 0
 
-        detected = list(dict.fromkeys(detected))
+                for med in medicine_db:
 
-        if len(detected) == 0:
-            st.warning("No medicine detected clearly. Try uploading a clearer image.")
+                    score = max(
+                        fuzz.ratio(str(med).lower(), clean_text.lower()),
+                        fuzz.partial_ratio(str(med).lower(), clean_text.lower()),
+                        fuzz.token_sort_ratio(str(med).lower(), clean_text.lower())
+                    )
 
-        else:
-            if "selected_med" not in st.session_state:
-                st.session_state.selected_med = None
+                    if score > best_score:
+                        best_score = score
+                        best_match = med
+
+                if best_score >= 70 and best_match is not None:
+                    detected.append(best_match)
+                else:
+                    not_found.append(clean_text)
+
+            detected = list(dict.fromkeys(detected))
+            not_found = list(dict.fromkeys(not_found))
+
+            st.session_state["detected_medicines"] = detected
+            st.session_state["not_found_medicines"] = not_found
+            st.session_state["ocr_selected_med"] = None
+
+    if "detected_medicines" in st.session_state:
+
+        detected = st.session_state["detected_medicines"]
+
+        if detected:
+
+            st.subheader("💊 Medicines Detected")
 
             for i, med in enumerate(detected):
-                if st.button(f"✔ {med}", key=f"med_{i}_{med}"):
-                    st.session_state.selected_med = med
+                if st.button(f"✔ {med}", key=f"ocr_med_{i}_{med}"):
+                    st.session_state["ocr_selected_med"] = med
 
-            if st.session_state.selected_med:
+            if st.session_state.get("ocr_selected_med"):
 
-                selected = st.session_state.selected_med
+                selected = st.session_state["ocr_selected_med"]
 
-                st.subheader(f"🏥 Availability for {selected}")
+                st.success(f"Selected Medicine: {selected}")
 
-                matches = df[df["Medicine_Name"] == selected]
+                selected_area = st.selectbox(
+                    "📍 Select Area",
+                    sorted(df["Area"].dropna().unique()),
+                    key="ocr_area"
+                )
 
-                if matches.empty:
-                    st.error("No pharmacy found in dataset.")
+                if st.button("Check Availability", key="ocr_check"):
 
-                else:
-                    available = matches[matches["Availability"] == "Available"]
-                    low_stock = matches[matches["Availability"] == "Low Stock"]
-                    out_stock = matches[matches["Availability"] == "Out of Stock"]
+                    result = df[
+                        (df["Medicine_Name"] == selected) &
+                        (df["Area"] == selected_area)
+                    ]
 
-                    if not available.empty:
-                        st.success(f"✅ {selected} is Available")
-
-                        st.write("### 📍 Available at:")
-
-                        for _, shop in available.iterrows():
-                            st.write(
-                                f"✅ **{shop['Pharmacy_Name']}** - {shop['Area']} "
-                                f"| 📞 {shop['Contact_Number']} "
-                                f"| 🚚 Delivery: {shop['Home_Delivery']}"
-                            )
-
-                    elif not low_stock.empty:
-                        st.warning(f"⚠️ {selected} is Low Stock")
-
-                        st.write("### 📍 Low stock at:")
-
-                        for _, shop in low_stock.iterrows():
-                            st.write(
-                                f"⚠️ **{shop['Pharmacy_Name']}** - {shop['Area']} "
-                                f"| 📞 {shop['Contact_Number']}"
-                            )
+                    if result.empty:
+                        st.error("❌ Not available in selected area")
 
                     else:
-                        st.error(f"❌ {selected} is Out of Stock")
-# =====================================================
-# ⏰ TAB 4 (FINAL HYBRID CLOCK + AM/PM)
-# =====================================================
+                        available_rows = result[result["Availability"] == "Available"]
+                        low_rows = result[result["Availability"] == "Low Stock"]
+
+                        if not available_rows.empty:
+                            row = available_rows.iloc[0]
+                        elif not low_rows.empty:
+                            row = low_rows.iloc[0]
+                        else:
+                            row = result.iloc[0]
+
+                        status = row["Availability"]
+
+                        if status == "Available":
+                            color = "#00c9a7"
+                            emoji = "🟢"
+                        elif status == "Low Stock":
+                            color = "#ffc107"
+                            emoji = "🟡"
+                        else:
+                            color = "#ff4d4d"
+                            emoji = "🔴"
+
+                        st.markdown(f"""
+<div style="background:rgba(0,0,0,0.75);padding:20px;border-radius:15px;border-left:6px solid {color};margin-top:15px;">
+<h2 style="color:{color};">{emoji} {status}</h2>
+<p style="color:white;">🏥 {row['Pharmacy_Name']}</p>
+<p style="color:white;">📍 {row['Area']}</p>
+<p style="color:white;">📞 {row['Contact_Number']}</p>
+<p style="color:white;">🚚 Delivery: {row['Home_Delivery']}</p>
+<p style="color:white;">⏱️ Delivery Time: {row['Delivery_Time_Minutes']} mins</p>
+</div>
+""", unsafe_allow_html=True)
+
+        else:
+            st.warning("No medicine detected clearly. Try a clearer image.")
+
+    if "not_found_medicines" in st.session_state:
+
+        not_found = st.session_state["not_found_medicines"]
+
+        if not_found:
+            st.subheader("❌ Not in Dataset / Not in Stock")
+
+            for med in not_found:
+                st.warning(
+                    f"❌ {med} is not in stock. 🔔 We will remind you when it comes back."
+                )
 with tab4:
 
     st.header("⏰ Medicine Reminder")
 
-    # ✅ SESSION INIT (IMPORTANT)
     if "reminders" not in st.session_state:
         st.session_state["reminders"] = []
 
-    # -------------------------
-    # INPUT SECTION
-    # -------------------------
     col1, col2, col3 = st.columns(3)
 
     with col1:
         med_name = st.selectbox(
             "💊 Medicine",
-            df['Medicine_Name'].unique(),
+            df["Medicine_Name"].unique(),
             key="rem_med"
         )
 
@@ -276,22 +351,17 @@ with tab4:
             key="rem_ampm"
         )
 
-    # -------------------------
-    # ADD REMINDER
-    # -------------------------
     if st.button("➕ Add Reminder"):
 
         hour = clock_time.hour
         minute = clock_time.minute
 
-        # 🔥 AM/PM FIX
         if am_pm == "PM" and hour < 12:
             hour += 12
         elif am_pm == "AM" and hour >= 12:
             hour -= 12
 
         final_time = datetime.time(hour, minute)
-
         now = datetime.datetime.now()
 
         reminder_datetime = datetime.datetime.combine(
@@ -299,7 +369,6 @@ with tab4:
             final_time
         )
 
-        # 🔥 if time passed → next day
         if reminder_datetime <= now:
             reminder_datetime += datetime.timedelta(days=1)
 
@@ -315,9 +384,6 @@ with tab4:
 
     st.divider()
 
-    # -------------------------
-    # DISPLAY REMINDERS
-    # -------------------------
     st.subheader("📋 Your Reminders")
 
     current_time = datetime.datetime.now()
@@ -336,7 +402,6 @@ with tab4:
 
             time_diff = (time_val - current_time).total_seconds()
 
-            # 🔥 STATUS LOGIC
             if not taken:
                 if time_diff <= 0:
                     status = "🔔 DUE NOW"
@@ -351,20 +416,14 @@ with tab4:
                 status = "✅ Taken"
                 color = "#28a745"
 
-            # -------------------------
-            # CARD UI
-            # -------------------------
             st.markdown(f"""
-            <div style="background:rgba(0,0,0,0.7);padding:15px;border-radius:10px;margin-bottom:10px;border-left:5px solid {color}">
-                <h4 style="color:white;">💊 {med}</h4>
-                <p style="color:white;">⏰ {time_val.strftime('%I:%M %p')}</p>
-                <p style="color:{color};"><b>{status}</b></p>
-            </div>
-            """, unsafe_allow_html=True)
+<div style="background:rgba(0,0,0,0.7);padding:15px;border-radius:10px;margin-bottom:10px;border-left:5px solid {color}">
+<h4 style="color:white;">💊 {med}</h4>
+<p style="color:white;">⏰ {time_val.strftime('%I:%M %p')}</p>
+<p style="color:{color};"><b>{status}</b></p>
+</div>
+""", unsafe_allow_html=True)
 
-            # -------------------------
-            # BUTTONS
-            # -------------------------
             colA, colB = st.columns(2)
 
             with colA:
@@ -377,9 +436,6 @@ with tab4:
                 if st.button("🗑 Delete", key=f"delete_{i}"):
                     st.session_state["reminders"].pop(i)
                     st.rerun()
-# =====================================================
-# 🚚 TAB 5 (ADVANCED + ORDER)
-# =====================================================
 with tab5:
 
     st.header("🚚 Smart Delivery Finder")
@@ -387,70 +443,99 @@ with tab5:
     col1, col2 = st.columns(2)
 
     with col1:
-        med3 = st.selectbox("💊 Medicine", df['Medicine_Name'].unique(), key="del")
+        med3 = st.selectbox(
+            "💊 Medicine",
+            df["Medicine_Name"].unique(),
+            key="del"
+        )
 
     with col2:
-        area3 = st.selectbox("📍 Your Area", df['Area'].unique(), key="del_area")
+        area3 = st.selectbox(
+            "📍 Your Area",
+            df["Area"].unique(),
+            key="del_area"
+        )
 
     if st.button("Find Delivery Options"):
 
         delivery_df = df[
-            (df['Medicine_Name'] == med3) &
-            (df['Home_Delivery'] == "Yes")
+            (df["Medicine_Name"] == med3) &
+            (df["Home_Delivery"] == "Yes")
         ].copy()
 
         if delivery_df.empty:
             st.error("❌ No delivery available")
+
         else:
 
             def estimate_time(row):
-                return row['Delivery_Time_Minutes'] if row['Area'] == area3 else row['Delivery_Time_Minutes'] + 10
+                if row["Area"] == area3:
+                    return row["Delivery_Time_Minutes"]
+                else:
+                    return row["Delivery_Time_Minutes"] + 10
 
-            delivery_df["Time"] = delivery_df.apply(estimate_time, axis=1)
+            delivery_df["Time"] = delivery_df.apply(
+                estimate_time,
+                axis=1
+            )
+
             delivery_df["Score"] = 100 - delivery_df["Time"]
-            delivery_df = delivery_df.sort_values(by="Score", ascending=False)
+
+            delivery_df = delivery_df.sort_values(
+                by="Score",
+                ascending=False
+            )
 
             for i, row in delivery_df.head(5).iterrows():
 
                 if i == delivery_df.index[0]:
-                    badge = "🏆 Best Choice"; color = "#00c9a7"
+                    badge = "🏆 Best Choice"
+                    color = "#00c9a7"
                 elif row["Time"] <= 15:
-                    badge = "⚡ Fast"; color = "#28a745"
+                    badge = "⚡ Fast"
+                    color = "#28a745"
                 else:
-                    badge = "📦 Available"; color = "#ffc107"
+                    badge = "📦 Available"
+                    color = "#ffc107"
 
                 st.markdown(f"""
-                <div style="background:rgba(0,0,0,0.75);padding:18px;border-radius:12px;margin-bottom:10px;border-left:5px solid {color}">
-                    <h4 style="color:white;">🏥 {row['Pharmacy_Name']} ({row['Area']})</h4>
-                    <p style="color:white;">⏱️ {row['Time']} mins</p>
-                    <p style="color:{color};"><b>{badge}</b></p>
-                </div>
-                """, unsafe_allow_html=True)
+<div style="background:rgba(0,0,0,0.75);padding:18px;border-radius:12px;margin-bottom:10px;border-left:5px solid {color}">
+<h4 style="color:white;">🏥 {row['Pharmacy_Name']} ({row['Area']})</h4>
+<p style="color:white;">⏱️ {row['Time']} mins</p>
+<p style="color:{color};"><b>{badge}</b></p>
+</div>
+""", unsafe_allow_html=True)
 
                 colA, colB = st.columns(2)
 
                 with colA:
                     location = f"{row['Pharmacy_Name']} {row['Area']}".replace(" ", "+")
-                    st.link_button("📍 View Location", f"https://www.google.com/maps/search/?api=1&query={location}")
+                    st.link_button(
+                        "📍 View Location",
+                        f"https://www.google.com/maps/search/?api=1&query={location}"
+                    )
 
                 with colB:
-                    if st.button(f"🛒 Order Now - {row['Pharmacy_Name']}", key=f"order_{i}"):
-                        st.success(f"✅ Order placed from {row['Pharmacy_Name']}")
-                        st.info("💊 Your medicine will be delivered soon!")
-
-# =====================================================
-# 🎨 UI
-# =====================================================
+                    if st.button(
+                        f"🛒 Order Now - {row['Pharmacy_Name']}",
+                        key=f"order_{i}"
+                    ):
+                        st.success(
+                            f"✅ Order placed from {row['Pharmacy_Name']}"
+                        )
+                        st.info(
+                            "💊 Your medicine will be delivered soon!"
+                        )
 st.markdown(f"""
 <style>
 
 .stApp {{
-    background: url("data:image/png;base64,{img}") no-repeat center;
+    background: url("data:image/png;base64,{img}") no-repeat center center fixed;
     background-size: cover;
 }}
 
 .block-container {{
-    background: rgba(0,0,0,0.6);
+    background: rgba(0,0,0,0.72);
     padding: 20px;
     border-radius: 15px;
 }}
@@ -462,58 +547,30 @@ st.markdown(f"""
     border: none;
     padding: 10px 20px;
     font-weight: bold;
-    box-shadow: 5px 5px 12px rgba(0,0,0,0.6),
-                -3px -3px 8px rgba(255,255,255,0.1);
 }}
 
-h1,h2,h3,p,label {{
+h1,h2,h3,h4,p,label {{
     color:white;
 }}
 
-</style>
-""", unsafe_allow_html=True)
-st.markdown(f"""
-<style>
-
-/* REMOVE TOP SPACE */
-html, body, [data-testid="stAppViewContainer"] {{
-    margin: 0;
-    padding: 0;
-}}
-
-/* REMOVE HEADER GAP */
-header {{
-    visibility: hidden;
-    height: 0px;
-}}
-
-/* REMOVE EXTRA TOP PADDING */
-.block-container {{
-    padding-top: 0rem !important;
-}}
-
-/* FULL BACKGROUND FIX */
-.stApp {{
-    background: url("data:image/png;base64,{img}") no-repeat center center fixed;
-    background-size: cover;
-}}
-
-</style>
-""", unsafe_allow_html=True)
-st.markdown(f"""
-<style>
-
-/* REMOVE LINK UNDERLINE */
 a {{
     text-decoration: none !important;
     color: white !important;
 }}
 
-/* OPTIONAL: hover pe bhi underline na aaye */
 a:hover {{
     text-decoration: none !important;
     color: #00c9a7 !important;
 }}
 
+header {{
+    visibility: hidden;
+    height: 0px;
+}}
+
+.block-container {{
+    padding-top: 0rem !important;
+}}
+
 </style>
-""", unsafe_allow_html=True)
+""", unsafe_allow_html=True)                
