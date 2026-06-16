@@ -4,7 +4,6 @@ import numpy as np
 import base64
 import easyocr
 import datetime
-import pytesseract
 import cv2
 
 from PIL import Image
