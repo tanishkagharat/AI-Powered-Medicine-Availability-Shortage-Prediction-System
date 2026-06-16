@@ -4,10 +4,10 @@ import numpy as np
 import base64
 import easyocr
 import datetime
-import cv2
+
 
 from PIL import Image
-from fuzzywuzzy import fuzz
+
 @st.cache_resource
 def load_reader():
     return easyocr.Reader(["en"], gpu=False)
